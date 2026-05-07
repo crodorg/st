@@ -40,8 +40,10 @@ enum glyph_attribute {
 	ATTR_WIDE       = 1 << 9,
 	ATTR_WDUMMY     = 1 << 10,
 	ATTR_BOXDRAW    = 1 << 11,
+	ATTR_URL        = 1 << 12,
 	ATTR_BOLD_FAINT = ATTR_BOLD | ATTR_FAINT,
 	ATTR_IMAGE      = 1 << 14,
+	ATTR_DIRTYUNDERLINE = 1 << 15,
 };
 
 enum drawing_mode {
@@ -88,6 +90,8 @@ typedef struct {
 	uint32_t fg;      /* foreground  */
 	uint32_t bg;      /* background  */
 	uint32_t decor;   /* decoration (like underline) */
+	int ustyle;	  /* underline style */
+	int ucolor[3];    /* underline color */
 } Glyph;
 
 typedef Glyph *Line;
@@ -105,12 +109,14 @@ void redraw(void);
 void draw(void);
 
 void externalpipe(const Arg *);
+void newterm(const Arg *);
 void printscreen(const Arg *);
 void printsel(const Arg *);
 void sendbreak(const Arg *);
 void toggleprinter(const Arg *);
 
 int tattrset(int);
+int tisaltscr(void);
 void tnew(int, int);
 void tresize(int, int);
 void tsetdirtattr(int);
@@ -130,6 +136,10 @@ int selected(int, int);
 char *getsel(void);
 
 Glyph getglyphat(int, int);
+
+void highlighturlsline(int);
+void unhighlighturlsline(int);
+int followurl(int, int);
 
 size_t utf8encode(Rune, char *);
 
@@ -225,3 +235,8 @@ static inline uint32_t tgetimgplacementid(Glyph *g) {
 static inline void tsetimgplacementid(Glyph *g, uint32_t id) {
 	g->decor = (id & 0xFFFFFF) | (1 << 24);
 }
+
+extern char *urlhandler;
+extern char urlchars[];
+extern char *urlprefixes[];
+extern int nurlprefixes;

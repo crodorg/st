@@ -1,0 +1,11 @@
+*.o
+st
+!st.c
+!st.h
+!st.1
+!st.info
+*.orig
+*.bak
+*.bak-*
+*.installed.bak
+.code-review-graph/

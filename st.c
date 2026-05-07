@@ -22,6 +22,8 @@
 #include "win.h"
 #include "graphics.h"
 
+extern char *argv0;
+
 #if   defined(__linux)
  #include <pty.h>
 #elif defined(__OpenBSD__) || defined(__NetBSD__) || defined(__APPLE__)
@@ -35,6 +37,7 @@
 #define UTF_SIZ       4
 #define ESC_BUF_SIZ   (128*UTF_SIZ)
 #define ESC_ARG_SIZ   16
+#define CAR_PER_ARG   4
 #define STR_BUF_SIZ   ESC_BUF_SIZ
 #define STR_ARG_SIZ   ESC_ARG_SIZ
 
@@ -160,6 +163,7 @@ typedef struct {
 	int arg[ESC_ARG_SIZ];
 	int narg;              /* nb of args */
 	char mode[2];
+	int carg[ESC_ARG_SIZ][CAR_PER_ARG]; /* colon args */
 } CSIEscape;
 
 /* STR Escape sequence structs */
@@ -174,12 +178,14 @@ typedef struct {
 } STREscape;
 
 static void execsh(char *, char **);
+static int chdir_by_pid(pid_t pid);
 static void stty(char **);
 static void sigchld(int);
 static void ttywriteraw(const char *, size_t);
 
 static void csidump(void);
 static void csihandle(void);
+static void readcolonargs(char **, int, int[][CAR_PER_ARG]);
 static void csiparse(void);
 static void csireset(void);
 static void osc_color_response(int, int, int);
@@ -695,6 +701,92 @@ getsel(void)
 	return str;
 }
 
+char *
+strstrany(char* s, char** strs) {
+	char *match;
+	for (int i = 0; strs[i]; i++) {
+		if ((match = strstr(s, strs[i]))) {
+			return match;
+		}
+	}
+	return NULL;
+}
+
+void
+highlighturlsline(int row)
+{
+	char *linestr = calloc(sizeof(char), term.col+1); /* assume ascii */
+	char *match;
+	for (int j = 0; j < term.col; j++) {
+		if (TLINE(row)[j].u < 127) {
+			linestr[j] = TLINE(row)[j].u;
+		}
+		linestr[term.col] = '\0';
+	}
+	int url_start = -1;
+	while ((match = strstrany(linestr + url_start + 1, urlprefixes))) {
+		url_start = match - linestr;
+		for (int c = url_start; c < term.col && strchr(urlchars, linestr[c]); c++) {
+			TLINE(row)[c].mode |= ATTR_URL;
+			tsetdirt(row, c);
+		}
+	}
+	free(linestr);
+}
+
+void
+unhighlighturlsline(int row)
+{
+	for (int j = 0; j < term.col; j++) {
+		Glyph* g = &TLINE(row)[j];
+		if (g->mode & ATTR_URL) {
+			g->mode &= ~ATTR_URL;
+			tsetdirt(row, j);
+		}
+	}
+	return;
+}
+
+int
+followurl(int col, int row) {
+	char *linestr = calloc(sizeof(char), term.col+1); /* assume ascii */
+	char *match;
+	for (int i = 0; i < term.col; i++) {
+		if (TLINE(row)[i].u < 127) {
+			linestr[i] = TLINE(row)[i].u;
+		}
+		linestr[term.col] = '\0';
+	}
+	int url_start = -1, found_url = 0;
+	while ((match = strstrany(linestr + url_start + 1, urlprefixes))) {
+		url_start = match - linestr;
+		int url_end = url_start;
+		for (int c = url_start; c < term.col && strchr(urlchars, linestr[c]); c++) {
+			url_end++;
+		}
+		if (url_start <= col && col < url_end) {
+			found_url = 1;
+			linestr[url_end] = '\0';
+			break;
+		}
+	}
+	if (!found_url) {
+		free(linestr);
+		return 0;
+	}
+
+	pid_t chpid;
+	if ((chpid = fork()) == 0) {
+		if (fork() == 0)
+			execlp(urlhandler, urlhandler, linestr + url_start, NULL);
+		exit(1);
+	}
+	if (chpid > 0)
+		waitpid(chpid, NULL, 0);
+	free(linestr);
+    return 1;
+}
+
 void
 selclear(void)
 {
@@ -868,6 +960,7 @@ ttynew(const char *line, char *cmd, const char *out, char **args)
 		if (pledge("stdio rpath tty proc exec", NULL) == -1)
 			die("pledge\n");
 #endif
+		fcntl(m, F_SETFD, FD_CLOEXEC);
 		close(s);
 		cmdfd = m;
 		signal(SIGCHLD, sigchld);
@@ -1161,6 +1254,11 @@ tnew(int col, int row)
 	treset();
 }
 
+int tisaltscr(void)
+{
+	return IS_SET(MODE_ALTSCREEN);
+}
+
 void
 tswapscreen(void)
 {
@@ -1198,6 +1296,40 @@ kscrolldown(const Arg *a)
 	TSCREEN.off -= n;
 	selscroll(0, -n);
 	tfulldirt();
+}
+
+void
+newterm(const Arg* a)
+{
+	switch (fork()) {
+	case -1:
+		die("fork failed: %s\n", strerror(errno));
+		break;
+	case 0:
+		switch (fork()) {
+		case -1:
+			fprintf(stderr, "fork failed: %s\n", strerror(errno));
+			_exit(1);
+			break;
+		case 0:
+			chdir_by_pid(pid);
+			execl("/proc/self/exe", argv0, NULL);
+			_exit(1);
+			break;
+		default:
+			_exit(0);
+		}
+	default:
+		wait(NULL);
+	}
+}
+
+static int
+chdir_by_pid(pid_t pid)
+{
+	char buf[32];
+	snprintf(buf, sizeof buf, "/proc/%ld/cwd", (long)pid);
+	return chdir(buf);
 }
 
 void
@@ -1302,6 +1434,28 @@ tnewline(int first_col)
 }
 
 void
+readcolonargs(char **p, int cursor, int params[][CAR_PER_ARG])
+{
+	int i = 0;
+	for (; i < CAR_PER_ARG; i++)
+		params[cursor][i] = -1;
+
+	if (**p != ':')
+		return;
+
+	char *np = NULL;
+	i = 0;
+
+	while (**p == ':' && i < CAR_PER_ARG) {
+		while (**p == ':')
+			(*p)++;
+		params[cursor][i] = strtol(*p, &np, 10);
+		*p = np;
+		i++;
+	}
+}
+
+void
 csiparse(void)
 {
 	char *p = csiescseq.buf, *np;
@@ -1324,6 +1478,7 @@ csiparse(void)
 			v = -1;
 		csiescseq.arg[csiescseq.narg++] = v;
 		p = np;
+		readcolonargs(&p, csiescseq.narg-1, csiescseq.carg);
 		if (sep == ';' && *p == ':')
 			sep = ':'; /* allow override to colon once */
 		if (*p != sep || csiescseq.narg == ESC_ARG_SIZ)
@@ -1662,6 +1817,10 @@ tsetattr(const int *attr, int l)
 			term.c.attr.fg = defaultfg;
 			term.c.attr.bg = defaultbg;
 			term.c.attr.decor = DECOR_DEFAULT_COLOR;
+			term.c.attr.ustyle = -1;
+			term.c.attr.ucolor[0] = -1;
+			term.c.attr.ucolor[1] = -1;
+			term.c.attr.ucolor[2] = -1;
 			break;
 		case 1:
 			term.c.attr.mode |= ATTR_BOLD;
@@ -1673,21 +1832,14 @@ tsetattr(const int *attr, int l)
 			term.c.attr.mode |= ATTR_ITALIC;
 			break;
 		case 4:
-			term.c.attr.mode |= ATTR_UNDERLINE;
-			if (i + 1 < l) {
-				idx = attr[++i];
-				if (BETWEEN(idx, 1, 5)) {
-					tsetdecorstyle(&term.c.attr, idx);
-				} else if (idx == 0) {
-					term.c.attr.mode &= ~ATTR_UNDERLINE;
-					tsetdecorstyle(&term.c.attr, 0);
-				} else {
-					fprintf(stderr,
-						"erresc: unknown underline "
-						"style %d\n",
-						idx);
-				}
-			}
+			term.c.attr.ustyle = csiescseq.carg[i][0];
+
+			if (term.c.attr.ustyle != 0)
+				term.c.attr.mode |= ATTR_UNDERLINE;
+			else
+				term.c.attr.mode &= ~ATTR_UNDERLINE;
+
+			term.c.attr.mode ^= ATTR_DIRTYUNDERLINE;
 			break;
 		case 5: /* slow blink */
 			/* FALLTHROUGH */
@@ -1740,11 +1892,16 @@ tsetattr(const int *attr, int l)
 			term.c.attr.bg = defaultbg;
 			break;
 		case 58:
-			if ((idx = tdefcolor(attr, &i, l)) >= 0)
-				tsetdecorcolor(&term.c.attr, idx);
+			term.c.attr.ucolor[0] = csiescseq.carg[i][1];
+			term.c.attr.ucolor[1] = csiescseq.carg[i][2];
+			term.c.attr.ucolor[2] = csiescseq.carg[i][3];
+			term.c.attr.mode ^= ATTR_DIRTYUNDERLINE;
 			break;
 		case 59:
-			tsetdecorcolor(&term.c.attr, DECOR_DEFAULT_COLOR);
+			term.c.attr.ucolor[0] = -1;
+			term.c.attr.ucolor[1] = -1;
+			term.c.attr.ucolor[2] = -1;
+			term.c.attr.mode ^= ATTR_DIRTYUNDERLINE;
 			break;
 		default:
 			if (BETWEEN(attr[i], 30, 37)) {
@@ -2150,7 +2307,7 @@ csihandle(void)
 			goto unknown;
 		}
 		break;
-	case 't': /* XTWINOPS -- Window manipulation */
+	case 't': /* XTWINOPS / title stack operations */
 		switch (csiescseq.arg[0]) {
 		case 14: /* Report text area size in pixels. */
 			len = snprintf(buf, sizeof(buf), "\033[4;%i;%it",
@@ -2167,6 +2324,28 @@ csihandle(void)
 			len = snprintf(buf, sizeof(buf), "\033[8;%i;%it",
 					term.row, term.col);
 			ttywrite(buf, len, 0);
+			break;
+		case 22: /* push current title on stack */
+			switch (csiescseq.arg[1]) {
+			case 0:
+			case 1:
+			case 2:
+				xpushtitle();
+				break;
+			default:
+				goto unknown;
+			}
+			break;
+		case 23: /* pop last title from stack */
+			switch (csiescseq.arg[1]) {
+			case 0:
+			case 1:
+			case 2:
+				xsettitle(NULL, 1);
+				break;
+			default:
+				goto unknown;
+			}
 			break;
 		default:
 			goto unknown;
@@ -2250,7 +2429,7 @@ strhandle(void)
 		switch (par) {
 		case 0:
 			if (narg > 1) {
-				xsettitle(strescseq.args[1]);
+				xsettitle(strescseq.args[1], 0);
 				xseticontitle(strescseq.args[1]);
 			}
 			return;
@@ -2260,7 +2439,7 @@ strhandle(void)
 			return;
 		case 2:
 			if (narg > 1)
-				xsettitle(strescseq.args[1]);
+				xsettitle(strescseq.args[1], 0);
 			return;
 		case 52: /* manipulate selection data */
 			if (narg > 2 && allowwindowops) {
@@ -2332,7 +2511,7 @@ strhandle(void)
 		}
 		break;
 	case 'k': /* old title set compatibility */
-		xsettitle(strescseq.args[0]);
+		xsettitle(strescseq.args[0], 0);
 		return;
 	case 'P': /* DCS -- Device Control String */
 		/* https://gitlab.com/gnachman/iterm2/-/wikis/synchronized-updates-spec */
@@ -2782,6 +2961,7 @@ eschandle(uchar ascii)
 		break;
 	case 'c': /* RIS -- Reset to initial state */
 		treset();
+		xfreetitlestack();
 		resettitle();
 		xloadcols();
 		xsetmode(0, MODE_HIDE);
@@ -3002,11 +3182,6 @@ twrite(const char *buf, int buflen, int show_ctrl)
 	Rune u;
 	int n;
 
-	if (TSCREEN.off) {
-		TSCREEN.off = 0;
-		tfulldirt();
-	}
-
 	int su0 = su;
 	twrite_aborted = 0;
 
@@ -3143,7 +3318,7 @@ tresize(int col, int row)
 void
 resettitle(void)
 {
-	xsettitle(NULL);
+	xsettitle(NULL, 0);
 }
 
 void
@@ -3157,6 +3332,8 @@ drawregion(int x1, int y1, int x2, int y2)
 	for (y = y1; y < y2; y++) {
 		if (term.dirty[y]) {
 			term.dirty[y] = 0;
+			unhighlighturlsline(y);
+			highlighturlsline(y);
 			xdrawline(TSCREEN.buffer[L], x1, y, x2);
 		}
 		L = (L + 1) % TSCREEN.size;
