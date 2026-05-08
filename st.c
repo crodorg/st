@@ -3185,6 +3185,16 @@ twrite(const char *buf, int buflen, int show_ctrl)
 	int su0 = su;
 	twrite_aborted = 0;
 
+	/* Local "no auto-snap" fix: writes target live area, view stays
+	 * anchored. While off>0, every TLINE access subtracts off, so writing
+	 * through the cursor would clobber visible scrollback. Zero off for
+	 * the duration of this call, then re-anchor by the cur-delta produced
+	 * by any tscrollup() inside. */
+	int saved_off = TSCREEN.off;
+	int saved_cur = TSCREEN.cur;
+	if (saved_off > 0)
+		TSCREEN.off = 0;
+
 	for (n = 0; n < buflen; n += charsize) {
 		if (IS_SET(MODE_UTF8)) {
 			/* process a complete utf8 char */
@@ -3210,6 +3220,14 @@ twrite(const char *buf, int buflen, int show_ctrl)
 			}
 		}
 		tputc(u);
+	}
+
+	if (saved_off > 0) {
+		int cur_delta = (TSCREEN.cur - saved_cur + TSCREEN.size) % TSCREEN.size;
+		TSCREEN.off = saved_off + cur_delta;
+		if (TSCREEN.off > TSCREEN.size - term.row)
+			TSCREEN.off = TSCREEN.size - term.row;
+		tfulldirt();
 	}
 	return n;
 }

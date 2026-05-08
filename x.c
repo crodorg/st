@@ -2832,6 +2832,12 @@ kpress(XEvent *ev)
 		}
 	}
 
+	/* Any key that produces tty input snaps view to bottom. Scroll
+	 * shortcuts (Shift+PgUp/PgDn) are handled above and returned early,
+	 * so they don't trigger this. */
+	Arg snap = {.i = (1 << 20)};
+	kscrolldown(&snap);
+
 	/* 2. custom keys from config.h */
 	if ((customkey = kmap(ksym, e->state))) {
 		ttywrite(customkey, strlen(customkey), 1);
