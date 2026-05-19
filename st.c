@@ -616,24 +616,21 @@ selsnap(int *x, int *y, int direction)
 		break;
 	case SNAP_LINE:
 		/*
-		 * Snap around if the the previous line or the current one
-		 * has set ATTR_WRAP at its end. Then the whole next or
-		 * previous line will be selected.
+		 * Snap to paragraph: extend selection forward/backward
+		 * until a blank row (tlinelen == 0) is reached, or buffer end.
 		 */
 		*x = (direction < 0) ? 0 : term.col - 1;
+		if (tlinelen(*y) == 0)
+			break;
 		if (direction < 0) {
 			for (; *y > 0; *y += direction) {
-				if (!(TLINE(*y-1)[term.col-1].mode
-						& ATTR_WRAP)) {
+				if (tlinelen(*y - 1) == 0)
 					break;
-				}
 			}
 		} else if (direction > 0) {
-			for (; *y < term.row-1; *y += direction) {
-				if (!(TLINE(*y)[term.col-1].mode
-						& ATTR_WRAP)) {
+			for (; *y < term.row - 1; *y += direction) {
+				if (tlinelen(*y + 1) == 0)
 					break;
-				}
 			}
 		}
 		break;
@@ -693,9 +690,16 @@ getsel(void)
 		 * st.
 		 * FIXME: Fix the computer world.
 		 */
-		if ((y < sel.ne.y || lastx >= linelen) &&
-		    (!(last->mode & ATTR_WRAP) || sel.type == SEL_RECTANGULAR))
-			*ptr++ = '\n';
+		if (y < sel.ne.y || lastx >= linelen) {
+			if ((last->mode & ATTR_WRAP) && sel.type != SEL_RECTANGULAR) {
+				/* terminal-wrapped row: no separator */
+			} else if (sel.snap == SNAP_LINE && sel.type != SEL_RECTANGULAR
+			           && y + 1 <= sel.ne.y && tlinelen(y + 1) > 0) {
+				*ptr++ = ' ';
+			} else {
+				*ptr++ = '\n';
+			}
+		}
 	}
 	*ptr = 0;
 	return str;
