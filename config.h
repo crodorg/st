@@ -5,11 +5,13 @@
  *
  * font: see http://freedesktop.org/software/fontconfig/fontconfig-user.html
  */
-static char *font = "mono:size=14:antialias=true:autohint=true";
+static char *font = "mono:size=12:antialias=true:autohint=true";
 /* Spare fonts */
 static char *font2[] = {
-/*	"Inconsolata for Powerline:pixelsize=12:antialias=true:autohint=true", */
-/*	"Hack Nerd Font Mono:pixelsize=11:antialias=true:autohint=true", */
+	"Noto Sans CJK JP:size=12:antialias=true:autohint=true",
+	"Noto Sans CJK SC:size=12:antialias=true:autohint=true",
+	"Noto Sans CJK KR:size=12:antialias=true:autohint=true",
+	"Noto Sans CJK TC:size=12:antialias=true:autohint=true",
 };
 
 static int borderpx = 4;
@@ -554,3 +556,4 @@ char* urlprefixes[] = {"http://", "https://", NULL};
 #define UNDERCURL_SPIKY 1
 #define UNDERCURL_CAPPED 2
 #define UNDERCURL_STYLE UNDERCURL_SPIKY
+
