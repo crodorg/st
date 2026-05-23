@@ -2724,6 +2724,8 @@ xnotify(const char *title, const char *body)
 
 	if (!notifycmd || !*notifycmd)
 		return;
+	if (IS_SET(MODE_FOCUSED))
+		return;
 	if (!title)
 		title = notifyappname ? notifyappname : "st";
 	if (!body)
