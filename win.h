@@ -24,6 +24,7 @@ enum win_mode {
 };
 
 void xbell(void);
+void xnotify(const char *, const char *);
 void xclipcopy(void);
 void xdrawcursor(int, int, Glyph, int, int, Glyph, Line, int);
 void xdrawline(Line, int, int, int);

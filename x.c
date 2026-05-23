@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/select.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 #include <libgen.h>
@@ -2717,10 +2718,41 @@ xseturgency(int add)
 }
 
 void
+xnotify(const char *title, const char *body)
+{
+	pid_t pid;
+
+	if (!notifycmd || !*notifycmd)
+		return;
+	if (!title)
+		title = notifyappname ? notifyappname : "st";
+	if (!body)
+		body = "";
+
+	/* double-fork so child reparents to init; no zombies, no blocking */
+	if ((pid = fork()) == 0) {
+		if (fork() == 0) {
+			setsid();
+			execlp(notifycmd, notifycmd,
+			       "-a", notifyappname ? notifyappname : "st",
+			       "-i", "utilities-terminal",
+			       title, body, (char *)NULL);
+			_exit(127);
+		}
+		_exit(0);
+	}
+	if (pid > 0)
+		waitpid(pid, NULL, 0);
+}
+
+void
 xbell(void)
 {
-	if (!(IS_SET(MODE_FOCUSED)))
+	if (!(IS_SET(MODE_FOCUSED))) {
 		xseturgency(1);
+		if (bellnotify)
+			xnotify(notifyappname ? notifyappname : "st", "Bell");
+	}
 	if (bellvolume)
 		XkbBell(xw.dpy, xw.win, bellvolume, (Atom)NULL);
 }

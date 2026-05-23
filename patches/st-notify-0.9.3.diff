@@ -1,0 +1,43 @@
+Desktop-notification support for st.
+
+Three notification paths, all routed through notify-send:
+
+  1. Bell-on-unfocus  — when st receives BEL (\a) while the window is
+     unfocused, fire notify-send. Controlled by `bellnotify` in config.h.
+     Catches anything that already rings the terminal bell (Claude Code's
+     idle/waiting indicator, irc clients, shell PROMPT_COMMAND, etc.) with
+     zero config on the source side.
+
+  2. OSC 9  (iTerm2-style)  — `\033]9;Message\007`
+     Fires unconditionally with title="st" and the supplied body.
+
+  3. OSC 777 (urxvt-style)  — `\033]777;notify;Title;Body\007`
+     Fires unconditionally with separate title and body.
+
+OSC paths bypass `bellnotify` because they are explicit requests from a
+program — not the implicit "something rang the bell" signal.
+
+For OSC traversal through tmux, the outer tmux needs:
+    set -g allow-passthrough on
+
+Implementation:
+
+* win.h
+  - declare void xnotify(const char *, const char *);
+
+* config.def.h / config.h
+  - bellnotify   (int, default 1)
+  - notifycmd    (str, default "notify-send")
+  - notifyappname (str, default "st" — used as -a APPNAME)
+
+* x.c
+  - #include <sys/wait.h>
+  - xnotify(title, body): double-fork + execlp notify-send so the child
+    reparents to init (no zombies, no SIGCHLD interaction with the shell).
+    Passes "-a APPNAME -i utilities-terminal TITLE BODY".
+  - xbell(): when window is unfocused and bellnotify is set, also call
+    xnotify(appname, "Bell"). Pre-existing XkbBell behavior unchanged.
+
+* st.c
+  - strhandle() OSC switch: add case 9 (iTerm) and case 777 (urxvt,
+    "notify" subcommand only).

@@ -107,6 +107,18 @@ const int boxdraw_braille = 0;
  */
 static int bellvolume = 0;
 
+/*
+ * Desktop notifications via notify-send.
+ *   bellnotify  — when 1, fire notify-send on BEL while window unfocused
+ *   notifycmd   — program executed (must be on $PATH)
+ *   notifyappname — passed as -a APPNAME
+ * OSC 9 and OSC 777 (urxvt-style "notify;title;body") always fire,
+ * regardless of bellnotify, since they are explicit requests.
+ */
+static int bellnotify = 1;
+static char *notifycmd = "notify-send";
+static char *notifyappname = "st";
+
 /* default TERM value */
 char *termname = "st-256color";
 

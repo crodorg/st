@@ -2445,6 +2445,16 @@ strhandle(void)
 			if (narg > 1)
 				xsettitle(strescseq.args[1], 0);
 			return;
+		case 9: /* iTerm2-style desktop notification: OSC 9 ; body BEL */
+			if (narg > 1)
+				xnotify(NULL, strescseq.args[1]);
+			return;
+		case 777: /* urxvt-style: OSC 777 ; notify ; title ; body BEL */
+			if (narg > 1 && !strcmp(strescseq.args[1], "notify")) {
+				xnotify(narg > 2 ? strescseq.args[2] : NULL,
+				        narg > 3 ? strescseq.args[3] : NULL);
+			}
+			return;
 		case 52: /* manipulate selection data */
 			if (narg > 2 && allowwindowops) {
 				dec = base64dec(strescseq.args[2]);
