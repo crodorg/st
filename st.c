@@ -160,6 +160,7 @@ typedef struct {
 	char buf[ESC_BUF_SIZ]; /* raw string */
 	size_t len;            /* raw string length */
 	char priv;
+	char prefix;           /* '>' '<' or '=' private-marker prefix */
 	int arg[ESC_ARG_SIZ];
 	int narg;              /* nb of args */
 	char mode[2];
@@ -251,6 +252,7 @@ static Term term;
 static Selection sel;
 static CSIEscape csiescseq;
 static STREscape strescseq;
+static int kbdcsiu; /* kitty keyboard disambiguate enabled (CSI u handshake) */
 static int iofd = 1;
 static int cmdfd;
 static pid_t pid;
@@ -749,6 +751,59 @@ unhighlighturlsline(int row)
 		}
 	}
 	return;
+}
+
+/*
+ * OSC 8 hyperlinks. URIs are interned into a session-global table; cells store
+ * a 1-based id (0 = no link). Deduplicated so repeated links (e.g. one per
+ * `ls --hyperlink` entry) don't grow the table without bound.
+ */
+static char **hlinks;
+static size_t hlinks_len, hlinks_cap;
+
+static uint
+hlinkintern(const char *uri)
+{
+	size_t i;
+
+	if (!uri || !*uri)
+		return 0;
+	for (i = 0; i < hlinks_len; i++)
+		if (!strcmp(hlinks[i], uri))
+			return i + 1;
+	if (hlinks_len == hlinks_cap) {
+		hlinks_cap = hlinks_cap ? hlinks_cap * 2 : 32;
+		hlinks = xrealloc(hlinks, hlinks_cap * sizeof(*hlinks));
+	}
+	hlinks[hlinks_len++] = xstrdup(uri);
+	return hlinks_len; /* 1-based */
+}
+
+char *
+gethlink(uint id)
+{
+	return (id && id <= hlinks_len) ? hlinks[id - 1] : NULL;
+}
+
+int
+followhlink(int col, int row)
+{
+	char *url;
+	pid_t chpid;
+
+	if (col < 0 || col >= term.col || row < 0 || row >= term.row)
+		return 0;
+	if (!(url = gethlink(TLINE(row)[col].hlink)))
+		return 0;
+
+	if ((chpid = fork()) == 0) {
+		if (fork() == 0)
+			execlp(urlhandler, urlhandler, url, NULL);
+		exit(1);
+	}
+	if (chpid > 0)
+		waitpid(chpid, NULL, 0);
+	return 1;
 }
 
 int
@@ -1302,6 +1357,51 @@ kscrolldown(const Arg *a)
 	tfulldirt();
 }
 
+/*
+ * OSC 7: working directory reported by the shell as file://host/path.
+ * Preferred by newterm over the /proc fallback. Stays NULL (and thus inert)
+ * unless the shell emits OSC 7 each prompt.
+ */
+static char *osc7cwd;
+
+static int
+hexval(int c)
+{
+	if (c >= '0' && c <= '9') return c - '0';
+	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+	return -1;
+}
+
+static void
+osc7setcwd(const char *uri)
+{
+	const char *p;
+	char *path, *w;
+	int hi, lo;
+
+	if (!strncmp(uri, "file://", 7)) {
+		if (!(p = strchr(uri + 7, '/'))) /* skip host, keep leading / */
+			return;
+	} else {
+		p = uri; /* tolerate a bare path */
+	}
+
+	w = path = xmalloc(strlen(p) + 1);
+	for (; *p; p++) {
+		if (*p == '%' && (hi = hexval(p[1])) >= 0 && (lo = hexval(p[2])) >= 0) {
+			*w++ = (hi << 4) | lo;
+			p += 2;
+		} else {
+			*w++ = *p;
+		}
+	}
+	*w = '\0';
+
+	free(osc7cwd);
+	osc7cwd = path;
+}
+
 void
 newterm(const Arg* a)
 {
@@ -1332,6 +1432,8 @@ static int
 chdir_by_pid(pid_t pid)
 {
 	char buf[32];
+	if (osc7cwd && chdir(osc7cwd) == 0)
+		return 0;
 	snprintf(buf, sizeof buf, "/proc/%ld/cwd", (long)pid);
 	return chdir(buf);
 }
@@ -1470,6 +1572,9 @@ csiparse(void)
 	if (*p == '?') {
 		csiescseq.priv = 1;
 		p++;
+	} else if (*p == '>' || *p == '<' || *p == '=') {
+		csiescseq.prefix = *p;
+		p++;
 	}
 
 	csiescseq.buf[csiescseq.len] = '\0';
@@ -1600,6 +1705,7 @@ tclearregion(int x1, int y1, int x2, int y2)
 			gp->decor = term.c.attr.decor;
 			gp->mode = 0;
 			gp->u = ' ';
+			gp->hlink = 0;
 		}
 		L = (L + 1) % TSCREEN.size;
 	}
@@ -1642,6 +1748,7 @@ void tcreateimgplaceholder(uint32_t image_id, uint32_t placement_id, int cols,
 			}
 			gp->mode = ATTR_IMAGE;
 			gp->u = 0;
+			gp->hlink = 0;
 			tsetimgrow(gp, row + 1);
 			tsetimgcol(gp, col + 1);
 			tsetimgid(gp, image_id);
@@ -2085,6 +2192,31 @@ csihandle(void)
 	char buf[40];
 	int len;
 
+	/*
+	 * CSI sequences with a '>', '<' or '=' prefix. Only a couple are
+	 * implemented; the rest are ignored (as before). Handling them here
+	 * keeps prefixed input (e.g. secondary DA "CSI > c") from leaking into
+	 * the unprefixed cases below.
+	 */
+	if (csiescseq.prefix) {
+		switch (csiescseq.mode[0]) {
+		case 'u': /* kitty keyboard protocol, level 1 (disambiguate) */
+			kbdcsiu = (csiescseq.prefix == '>') ? 1 :
+			          (csiescseq.prefix == '<') ? 0 :
+			          (csiescseq.arg[0] & 1); /* '=' : set from flags */
+			xsetmode(kbdcsiu, MODE_KBD_CSIU);
+			break;
+		case 'q': /* CSI > q -- XTVERSION */
+			if (csiescseq.prefix == '>') {
+				len = snprintf(buf, sizeof(buf),
+				    "\033P>|st-graphics(%s)\033\\", VERSION);
+				ttywrite(buf, len, 0);
+			}
+			break;
+		}
+		return;
+	}
+
 	switch (csiescseq.mode[0]) {
 	default:
 	unknown:
@@ -2283,9 +2415,10 @@ csihandle(void)
 	case 's': /* DECSC -- Save cursor position (ANSI.SYS) */
 		tcursor(CURSOR_SAVE);
 		break;
-	case 'u': /* DECRC -- Restore cursor position (ANSI.SYS) */
+	case 'u': /* DECRC -- Restore cursor; CSI ? u -- query kbd flags */
 		if (csiescseq.priv) {
-			goto unknown;
+			len = snprintf(buf, sizeof(buf), "\033[?%du", kbdcsiu);
+			ttywrite(buf, len, 0);
 		} else {
 			tcursor(CURSOR_LOAD);
 		}
@@ -2295,17 +2428,6 @@ csihandle(void)
 		case 'q': /* DECSCUSR -- Set Cursor Style */
 			if (xsetcursor(csiescseq.arg[0]))
 				goto unknown;
-			break;
-		default:
-			goto unknown;
-		}
-		break;
-	case '>':
-		switch (csiescseq.mode[1]) {
-		case 'q': /* XTVERSION -- Print terminal name and version */
-			len = snprintf(buf, sizeof(buf),
-				       "\033P>|st-graphics(%s)\033\\", VERSION);
-			ttywrite(buf, len, 0);
 			break;
 		default:
 			goto unknown;
@@ -2454,6 +2576,16 @@ strhandle(void)
 				xnotify(narg > 2 ? strescseq.args[2] : NULL,
 				        narg > 3 ? strescseq.args[3] : NULL);
 			}
+			return;
+		case 7: /* OSC 7 ; file://host/path -- report working directory */
+			if (narg > 1)
+				osc7setcwd(strescseq.args[1]);
+			return;
+		case 8: /* OSC 8 ; params ; URI -- hyperlink (empty URI closes) */
+			/* NOTE: strparse split on ';', so a URI containing a
+			 * literal ';' would be truncated. OSC 8 producers don't
+			 * emit those, so take args[2] as the URI. */
+			term.c.attr.hlink = (narg > 2) ? hlinkintern(strescseq.args[2]) : 0;
 			return;
 		case 52: /* manipulate selection data */
 			if (narg > 2 && allowwindowops) {
@@ -3266,14 +3398,86 @@ ensureline(Line line)
 	return line;
 }
 
+/*
+ * Reflow scratch buffers (reused across resizes; single-threaded).
+ * rfnb collects the rewrapped line pointers; lbuf accumulates one logical
+ * line (a run of physical lines joined by ATTR_WRAP) before re-emission.
+ */
+static Line *rfnb;
+static int rfnl, rfnlcap;
+static Glyph *lbuf;
+static int lbufcap;
+
+/*
+ * Re-emit one logical line (lb[0..ll)) into rfnb as physical lines of width
+ * `col`, inserting a soft-wrap (ATTR_WRAP on the last cell) wherever content
+ * spills past `col`. Wide glyphs keep their dummy; an over-wide glyph in a
+ * 1-column terminal is degraded to narrow so we always make progress. If the
+ * cursor's logical offset (cur_logical, or ll for end-of-line) is emitted,
+ * its new (rfnb index, column) is reported via *cabs/*cnx.
+ */
+static void
+reflow_emit(const Glyph *lb, int ll, int col, int linelen, Glyph blank,
+            int cur_logical, int *cabs, int *cnx)
+{
+	int idx = 0;
+
+	do {
+		Line line = xmalloc(linelen * sizeof(Glyph));
+		int ecol = 0;
+
+		while (idx < ll && ecol < col) {
+			Glyph g = lb[idx];
+			int w;
+
+			if (g.mode & ATTR_WDUMMY) { idx++; continue; }
+			w = (g.mode & ATTR_WIDE) ? 2 : 1;
+			if (ecol + w > col) {
+				if (ecol == 0) {
+					/* glyph wider than the whole line */
+					g.mode &= ~ATTR_WIDE;
+					if (idx == cur_logical) { *cabs = rfnl; *cnx = 0; }
+					line[0] = g;
+					ecol = 1;
+					idx++;
+				}
+				break;
+			}
+			if (idx == cur_logical) { *cabs = rfnl; *cnx = ecol; }
+			line[ecol] = g;
+			if (w == 2) {
+				line[ecol + 1] = g;
+				line[ecol + 1].u = '\0';
+				line[ecol + 1].mode = ATTR_WDUMMY;
+			}
+			ecol += w;
+			idx++;
+		}
+		if (cur_logical == ll && idx >= ll) { *cabs = rfnl; *cnx = ecol; }
+
+		clearline(line, blank, ecol, linelen);
+		if (idx < ll && ecol > 0)
+			line[ecol - 1].mode |= ATTR_WRAP;
+
+		if (rfnl >= rfnlcap) {
+			rfnlcap = rfnlcap ? rfnlcap * 2 : 256;
+			rfnb = xrealloc(rfnb, rfnlcap * sizeof(Line));
+		}
+		rfnb[rfnl++] = line;
+	} while (idx < ll);
+}
+
 void
 tresize(int col, int row)
 {
-	int i, j;
+	int i;
 	int minrow = MIN(row, term.row);
-	int mincol = MIN(col, term.col);
 	int linelen = MAX(col, term.linelen);
 	int *bp;
+	LineBuffer *sb = &term.screen[0];
+	int alt = IS_SET(MODE_ALTSCREEN);
+	int reflow_cursor = !alt;
+	Glyph blank;
 
 	if (col < 1 || row < 1 || row > HISTSIZE) {
 		fprintf(stderr,
@@ -3281,44 +3485,165 @@ tresize(int col, int row)
 		return;
 	}
 
-	/* Shift buffer to keep the cursor where we expect it */
-	if (row <= term.c.y) {
-		term.screen[0].cur = (term.screen[0].cur - row + term.c.y + 1) % term.screen[0].size;
-	}
+	/* Reflow renumbers rows, so any selection is invalidated. Skip on the
+	 * first resize from tnew, when term.dirty/term.row aren't set up yet. */
+	if (term.col > 0)
+		selclear();
 
-	/* Resize and clear line buffers as needed */
-	if (linelen > term.linelen) {
-		for (i = 0; i < term.screen[0].size; ++i) {
-			if (term.screen[0].buffer[i]) {
-				term.screen[0].buffer[i] = xrealloc(term.screen[0].buffer[i], linelen * sizeof(Glyph));
-				clearline(term.screen[0].buffer[i], term.c.attr, term.linelen, linelen);
+	blank = term.c.attr;
+	blank.mode = 0;
+	blank.u = ' ';
+	blank.hlink = 0;
+
+	/* ---- Reflow the main screen (history + active) into a fresh ring ---- */
+#define S0(yy) (sb->buffer[(((yy) + sb->cur) % sb->size + sb->size) % sb->size])
+	rfnl = 0;
+	{
+		int cabs = -1, cnx = 0;
+
+		if (term.col > 0) {  /* skip on the first tresize from tnew */
+			int histlen = 0, bottomrow, ll = 0, y;
+
+			/* count history lines above the live screen */
+			while (histlen < sb->size - term.row && S0(-histlen - 1))
+				histlen++;
+
+			/* lowest live row that carries content (or the cursor) */
+			bottomrow = reflow_cursor ? term.c.y : 0;
+			for (y = term.row - 1; y >= 0; y--) {
+				Line ln = S0(y);
+				int wrapped = (ln[term.col-1].mode & ATTR_WRAP) ||
+				    ((ln[term.col-1].mode & ATTR_WDUMMY) && term.col >= 2 &&
+				     (ln[term.col-2].mode & ATTR_WRAP));
+				int len = term.col;
+				if (!wrapped)
+					while (len > 0 && ln[len-1].u == ' ' &&
+					       !(ln[len-1].mode & (ATTR_WIDE|ATTR_IMAGE)))
+						len--;
+				if (len > 0) { bottomrow = MAX(bottomrow, y); break; }
+			}
+
+			/* walk source rows oldest..bottom, build and emit logical lines */
+			for (y = -histlen; y <= bottomrow; y++) {
+				Line ln = S0(y);
+				int wrapped = (ln[term.col-1].mode & ATTR_WRAP) ||
+				    ((ln[term.col-1].mode & ATTR_WDUMMY) && term.col >= 2 &&
+				     (ln[term.col-2].mode & ATTR_WRAP));
+				int len = term.col;
+
+				if (!wrapped)
+					while (len > 0 && ln[len-1].u == ' ' &&
+					       !(ln[len-1].mode & (ATTR_WIDE|ATTR_IMAGE)))
+						len--;
+
+				if (reflow_cursor && y == term.c.y) {
+					int cx = MIN(term.c.x, term.col);
+					if (cx > len)   /* keep cells up to the cursor */
+						len = cx;
+					cabs = -2;      /* stash logical offset in cnx */
+					cnx = ll + cx;
+				}
+
+				if (ll + len > lbufcap) {
+					lbufcap = MAX(ll + len, lbufcap ? lbufcap * 2 : 256);
+					lbuf = xrealloc(lbuf, lbufcap * sizeof(Glyph));
+				}
+				for (i = 0; i < len; i++) {
+					Glyph g = ln[i];
+					if (g.mode & ATTR_IMAGE)   /* drop image placement */
+						g = blank;
+					g.mode &= ~ATTR_WRAP;      /* wrap is recomputed on emit */
+					lbuf[ll++] = g;
+				}
+
+				if (wrapped)
+					continue;
+
+				/* logical line complete: emit it */
+				{
+					int cur_logical = (cabs == -2) ? cnx : -1;
+					int rcabs = -1, rcnx = 0;
+					reflow_emit(lbuf, ll, col, linelen, blank,
+					            cur_logical, &rcabs, &rcnx);
+					if (cabs == -2) { cabs = rcabs; cnx = rcnx; }
+				}
+				ll = 0;
+			}
+			/* trailing unterminated wrap (rare) */
+			if (ll > 0) {
+				int cur_logical = (cabs == -2) ? cnx : -1;
+				int rcabs = -1, rcnx = 0;
+				reflow_emit(lbuf, ll, col, linelen, blank,
+				            cur_logical, &rcabs, &rcnx);
+				if (cabs == -2) { cabs = rcabs; cnx = rcnx; }
 			}
 		}
-		for (i = 0; i < minrow; ++i) {
+
+		/* free old main-screen lines now that content is copied out */
+		for (i = 0; i < sb->size; i++) {
+			free(sb->buffer[i]);
+			sb->buffer[i] = NULL;
+		}
+
+		/* pad the bottom so the live screen is full */
+		while (rfnl < row) {
+			Line line = xmalloc(linelen * sizeof(Glyph));
+			clearline(line, blank, 0, linelen);
+			if (rfnl >= rfnlcap) {
+				rfnlcap = rfnlcap ? rfnlcap * 2 : 256;
+				rfnb = xrealloc(rfnb, rfnlcap * sizeof(Line));
+			}
+			rfnb[rfnl++] = line;
+		}
+
+		/* keep only the newest `size` lines */
+		if (rfnl > sb->size) {
+			int drop = rfnl - sb->size;
+			for (i = 0; i < drop; i++)
+				free(rfnb[i]);
+			memmove(rfnb, rfnb + drop, (rfnl - drop) * sizeof(Line));
+			rfnl -= drop;
+			if (cabs >= 0) cabs -= drop;
+		}
+
+		/* install into the ring; active screen = bottom `row` lines */
+		for (i = 0; i < rfnl; i++)
+			sb->buffer[i] = rfnb[i];
+		sb->cur = rfnl - row;
+		sb->off = 0;
+		rfnl = 0;
+
+		if (reflow_cursor) {
+			if (cabs < 0) {
+				term.c.x = 0;
+				term.c.y = row - 1;
+			} else {
+				term.c.y = cabs - sb->cur;
+				term.c.x = cnx;
+			}
+			term.c.state &= ~CURSOR_WRAPNEXT;
+		}
+		sb->sc.x = MIN(sb->sc.x, col - 1);
+		sb->sc.y = MIN(sb->sc.y, row - 1);
+	}
+#undef S0
+
+	/* ---- Alt screen: clip/pad, never reflow ---- */
+	if (linelen > term.linelen) {
+		for (i = 0; i < minrow; i++) {
 			term.screen[1].buffer[i] = xrealloc(term.screen[1].buffer[i], linelen * sizeof(Glyph));
-			clearline(term.screen[1].buffer[i], term.c.attr, term.linelen, linelen);
+			clearline(term.screen[1].buffer[i], blank, term.linelen, linelen);
 		}
 	}
-	/* Allocate all visible lines for regular line buffer */
-	for (j = term.screen[0].cur, i = 0; i < row; ++i, j = (j + 1) % term.screen[0].size)
-	{
-		if (!term.screen[0].buffer[j]) {
-			term.screen[0].buffer[j] = xmalloc(linelen * sizeof(Glyph));
-		}
-		if (i >= term.row) {
-			clearline(term.screen[0].buffer[j], term.c.attr, 0, linelen);
-		}
-	}
-	/* Resize alt screen */
-	term.screen[1].cur = 0;
-	term.screen[1].size = row;
-	for (i = row; i < term.row; ++i) {
+	for (i = row; i < term.row; i++)
 		free(term.screen[1].buffer[i]);
-	}
 	term.screen[1].buffer = xrealloc(term.screen[1].buffer, row * sizeof(Line));
-	for (i = term.row; i < row; ++i) {
+	term.screen[1].cur = 0;
+	term.screen[1].off = 0;
+	term.screen[1].size = row;
+	for (i = term.row; i < row; i++) {
 		term.screen[1].buffer[i] = xmalloc(linelen * sizeof(Glyph));
-		clearline(term.screen[1].buffer[i], term.c.attr, 0, linelen);
+		clearline(term.screen[1].buffer[i], blank, 0, linelen);
 	}
 
 	/* resize to new height */

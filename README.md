@@ -46,6 +46,7 @@ On top of the patched tree:
 
 - **No auto-snap to bottom on output.** `twrite` no longer resets `TSCREEN.off = 0`. Scroll up, select text, switch windows — terminal stays put when new output arrives. Use `Shift+PgDn` or scroll wheel down to return to the bottom.
 - **Shift+Enter sends CSI-u (`\033[13;2u`).** Restores extended-key reporting needed by Claude Code (and other apps using the kitty keyboard protocol) so Shift+Enter inserts a newline instead of submitting.
+- **Reflow on resize.** `tresize` rewraps content to the new column count instead of clipping/padding at the old width — covering both the live screen and scrollback history. Lines joined by `ATTR_WRAP` are re-laid-out; wide-char pairs stay intact. Image placements are dropped on resize (cells blanked; kitty clients re-place), so images flicker/reload rather than corrupt. The alternate screen is never reflowed (clip/pad, so TUIs are unaffected).
 
 ## Build
 

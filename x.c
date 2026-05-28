@@ -560,6 +560,8 @@ mouseaction(XEvent *e, uint release)
 	mouse_row = evrow(e);
 
 	if (release == 0 && e->xbutton.button == Button1) {
+		if (followhlink(evcol(e), evrow(e)))
+			return 1;
 		return followurl(evcol(e), evrow(e));
 	}
 
@@ -2826,6 +2828,46 @@ kmap(KeySym k, uint state)
 	return NULL;
 }
 
+/*
+ * Kitty keyboard protocol, level 1 (disambiguate escape codes) only. Encodes
+ * the keys that legacy byte sequences can't tell apart -- Ctrl+<ascii> (so
+ * Ctrl+I != Tab, Ctrl+M != Enter, etc.) and modified Enter/Tab/Backspace/Esc --
+ * as "CSI <codepoint> ; <modifiers> u". Returns the encoded length, or 0 to let
+ * the normal (legacy) paths handle the key. Only called when an app has enabled
+ * the mode via the CSI u handshake, so plain typing is never affected.
+ */
+static int
+kittyu(KeySym ksym, uint state, char *out, size_t outlen)
+{
+	int cp = -1, mods = 0;
+
+	if (state & ShiftMask)   mods |= 1;
+	if (state & Mod1Mask)    mods |= 2;
+	if (state & ControlMask) mods |= 4;
+	if (state & Mod4Mask)    mods |= 8;
+
+	switch (ksym) {
+	case XK_Return:       cp = 13;  break;
+	case XK_Tab:          cp = 9;   break;
+	case XK_ISO_Left_Tab: cp = 9;   mods |= 1; break;
+	case XK_BackSpace:    cp = 127; break;
+	case XK_Escape:       cp = 27;  break;
+	default:
+		/* Only disambiguate Ctrl+<printable ascii>; everything else
+		 * (plain text, arrows, function keys) falls through to legacy. */
+		if ((state & ControlMask) && ksym >= 0x20 && ksym <= 0x7e)
+			cp = (ksym >= 'A' && ksym <= 'Z') ? ksym + 32 : ksym;
+		else
+			return 0;
+	}
+
+	/* Unmodified Enter/Tab/Backspace/Esc keep their legacy byte. */
+	if (mods == 0)
+		return 0;
+
+	return snprintf(out, outlen, "\033[%d;%du", cp, mods + 1);
+}
+
 void
 kpress(XEvent *ev)
 {
@@ -2872,7 +2914,18 @@ kpress(XEvent *ev)
 	Arg snap = {.i = (1 << 20)};
 	kscrolldown(&snap);
 
-	/* 2. custom keys from config.h */
+	/* 2. kitty keyboard protocol (disambiguate) -- only if app enabled it.
+	 * Use a separate length: kittyu() returns 0 to fall through, and we must
+	 * not clobber `len` (the XLookupString result the legacy path needs). */
+	if (IS_SET(MODE_KBD_CSIU)) {
+		int klen = kittyu(ksym, e->state, buf, sizeof buf);
+		if (klen) {
+			ttywrite(buf, klen, 1);
+			return;
+		}
+	}
+
+	/* 2b. custom keys from config.h */
 	if ((customkey = kmap(ksym, e->state))) {
 		ttywrite(customkey, strlen(customkey), 1);
 		return;

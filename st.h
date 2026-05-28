@@ -92,6 +92,7 @@ typedef struct {
 	uint32_t decor;   /* decoration (like underline) */
 	int ustyle;	  /* underline style */
 	int ucolor[3];    /* underline color */
+	uint hlink;       /* OSC 8 hyperlink id (0 = none) */
 } Glyph;
 
 typedef Glyph *Line;
@@ -140,6 +141,8 @@ Glyph getglyphat(int, int);
 void highlighturlsline(int);
 void unhighlighturlsline(int);
 int followurl(int, int);
+int followhlink(int, int);
+char *gethlink(uint);
 
 size_t utf8encode(Rune, char *);
 
