@@ -5,13 +5,14 @@
  *
  * font: see http://freedesktop.org/software/fontconfig/fontconfig-user.html
  */
-static char *font = "mono:size=12:antialias=true:autohint=true";
+static char *font = "mono:size=11:antialias=true:autohint=true";
 /* Spare fonts */
 static char *font2[] = {
-	"Noto Sans CJK JP:size=12:antialias=true:autohint=true",
-	"Noto Sans CJK SC:size=12:antialias=true:autohint=true",
-	"Noto Sans CJK KR:size=12:antialias=true:autohint=true",
-	"Noto Sans CJK TC:size=12:antialias=true:autohint=true",
+	"Symbols Nerd Font Mono:size=11:antialias=true:autohint=true",
+	"Noto Sans CJK JP:size=11:antialias=true:autohint=true",
+	"Noto Sans CJK SC:size=11:antialias=true:autohint=true",
+	"Noto Sans CJK KR:size=11:antialias=true:autohint=true",
+	"Noto Sans CJK TC:size=11:antialias=true:autohint=true",
 };
 
 static int borderpx = 4;
@@ -61,7 +62,7 @@ int allowaltscreen = 1;
 
 /* allow certain non-interactive (insecure) window operations such as:
    setting the clipboard text */
-int allowwindowops = 0;
+int allowwindowops = 1;
 
 /*
  * draw latency range in ms - from new content/keypress/etc until drawing.
@@ -99,7 +100,7 @@ const int boxdraw = 1;
 const int boxdraw_bold = 1;
 
 /* braille (U28XX):  1: render as adjacent "pixels",  0: use font */
-const int boxdraw_braille = 0;
+const int boxdraw_braille = 1;
 
 /*
  * bell volume. It must be a value between -100 and 100. Use 0 for disabling
