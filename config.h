@@ -5,14 +5,19 @@
  *
  * font: see http://freedesktop.org/software/fontconfig/fontconfig-user.html
  */
-static char *font = "mono:size=11:antialias=true:autohint=true";
+static char *font = "0xProto Nerd Font Mono:pixelsize=16:antialias=true:autohint=true";
 /* Spare fonts */
 static char *font2[] = {
-	"Symbols Nerd Font Mono:size=11:antialias=true:autohint=true",
-	"Noto Sans CJK JP:size=11:antialias=true:autohint=true",
-	"Noto Sans CJK SC:size=11:antialias=true:autohint=true",
-	"Noto Sans CJK KR:size=11:antialias=true:autohint=true",
-	"Noto Sans CJK TC:size=11:antialias=true:autohint=true",
+	"Symbols Nerd Font Mono:pixelsize=16:antialias=true:autohint=true",
+	/* Claude Code /context glyphs (⛀⛁ from NSS2, ⛶ from Iosevka) — the
+	 * runtime fontconfig fallback renders these flakily (blank on some
+	 * redraws); preloading pins them to a deterministic path. */
+	"Noto Sans Symbols 2:pixelsize=16:antialias=true:autohint=true",
+	"IosevkaTerm Nerd Font Mono:pixelsize=16:antialias=true:autohint=true",
+	"Noto Sans CJK JP:pixelsize=16:antialias=true:autohint=true",
+	"Noto Sans CJK SC:pixelsize=16:antialias=true:autohint=true",
+	"Noto Sans CJK KR:pixelsize=16:antialias=true:autohint=true",
+	"Noto Sans CJK TC:pixelsize=16:antialias=true:autohint=true",
 };
 
 static int borderpx = 4;
