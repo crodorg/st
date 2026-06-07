@@ -14,6 +14,10 @@ static char *font2[] = {
 	 * redraws); preloading pins them to a deterministic path. */
 	"Noto Sans Symbols 2:pixelsize=16:antialias=true:autohint=true",
 	"IosevkaTerm Nerd Font Mono:pixelsize=16:antialias=true:autohint=true",
+	/* Emoji before CJK: fontconfig 02-nf-emoji-fallback.conf strips emoji
+	 * ranges from the NF fonts + NSS2 above; CJK fonts cover some of those
+	 * codepoints (e.g. U+2600) and would swallow them otherwise. */
+	"Noto Color Emoji:pixelsize=16",
 	"Noto Sans CJK JP:pixelsize=16:antialias=true:autohint=true",
 	"Noto Sans CJK SC:pixelsize=16:antialias=true:autohint=true",
 	"Noto Sans CJK KR:pixelsize=16:antialias=true:autohint=true",
